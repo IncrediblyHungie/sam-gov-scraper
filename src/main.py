@@ -448,7 +448,8 @@ async def get_and_download_attachments(
                                 try:
                                     # Use page.request to fetch with browser's cookies
                                     response = await page.request.get(download_url)
-                                    Actor.log.info(f"Fetch response for {filename}: status={response.status}, headers={dict(response.headers)[:200] if response.headers else 'none'}")
+                                    status = response.status
+                                    Actor.log.info(f"Fetch {filename}: HTTP {status}")
                                     if response.ok:
                                         file_content = await response.body()
                                         Actor.log.info(f"Got {len(file_content)} bytes for {filename}")
@@ -459,17 +460,17 @@ async def get_and_download_attachments(
                                             await store.set_value(file_key, file_content)
                                             file_info["storageKey"] = file_key
                                             file_info["downloadedSize"] = len(file_content)
-                                            Actor.log.info(f"Downloaded via fetch: {filename} ({len(file_content):,} bytes)")
+                                            Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes)")
                                             if extract_text and filename.lower().endswith('.pdf'):
                                                 text = extract_pdf_text(file_content)
                                                 if text:
                                                     result["texts"].append({"filename": filename, "text": text[:50000]})
                                             download_success = True
                                     else:
-                                        Actor.log.warning(f"Fetch failed for {filename}: HTTP {response.status}")
-                                        file_info["httpStatus"] = response.status
+                                        Actor.log.warning(f"Fetch failed for {filename}: HTTP {status}")
+                                        file_info["httpStatus"] = status
                                 except Exception as fetch_err:
-                                    Actor.log.warning(f"Fetch download error for {filename}: {fetch_err}")
+                                    Actor.log.warning(f"Fetch error for {filename}: {type(fetch_err).__name__}: {fetch_err}")
 
                         except Exception as e:
                             Actor.log.debug(f"Playwright download failed for {filename}: {e}")
