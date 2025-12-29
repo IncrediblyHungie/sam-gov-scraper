@@ -377,7 +377,7 @@ async def get_and_download_attachments(
             download_client = httpx.AsyncClient(
                 timeout=120.0,
                 follow_redirects=True,
-                proxies={"all://": proxy_url}
+                proxy=proxy_url  # httpx uses 'proxy' not 'proxies'
             )
 
         try:
