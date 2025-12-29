@@ -448,8 +448,10 @@ async def get_and_download_attachments(
                                 try:
                                     # Use page.request to fetch with browser's cookies
                                     response = await page.request.get(download_url)
+                                    Actor.log.info(f"Fetch response for {filename}: status={response.status}, headers={dict(response.headers)[:200] if response.headers else 'none'}")
                                     if response.ok:
                                         file_content = await response.body()
+                                        Actor.log.info(f"Got {len(file_content)} bytes for {filename}")
                                         if len(file_content) > 0:
                                             store = await Actor.open_key_value_store()
                                             safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
@@ -464,9 +466,10 @@ async def get_and_download_attachments(
                                                     result["texts"].append({"filename": filename, "text": text[:50000]})
                                             download_success = True
                                     else:
-                                        Actor.log.debug(f"Fetch failed with status {response.status}")
+                                        Actor.log.warning(f"Fetch failed for {filename}: HTTP {response.status}")
+                                        file_info["httpStatus"] = response.status
                                 except Exception as fetch_err:
-                                    Actor.log.debug(f"Fetch download failed: {fetch_err}")
+                                    Actor.log.warning(f"Fetch download error for {filename}: {fetch_err}")
 
                         except Exception as e:
                             Actor.log.debug(f"Playwright download failed for {filename}: {e}")
