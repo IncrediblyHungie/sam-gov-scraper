@@ -410,43 +410,64 @@ async def get_and_download_attachments(
                         page = await browser_context.new_page()
 
                         try:
-                            # First navigate to the opportunity page to establish session
-                            await page.goto(f"https://sam.gov/opp/{opp_id}/view", wait_until="domcontentloaded", timeout=30000)
-                            await asyncio.sleep(1)  # Wait for any JS to execute
+                            # First navigate to the opportunity page to establish session/cookies
+                            Actor.log.debug(f"Navigating to opportunity page for {opp_id}")
+                            await page.goto(f"https://sam.gov/opp/{opp_id}/view", wait_until="networkidle", timeout=45000)
+                            await asyncio.sleep(2)  # Wait for JS/cookies
 
-                            # Now try to download the file
-                            async with page.expect_download(timeout=60000) as download_info:
-                                await page.goto(download_url)
+                            # Try clicking download link on page if it exists
+                            try:
+                                # Look for the specific attachment link
+                                download_links = await page.query_selector_all(f'a[href*="{resource_id}"]')
+                                if download_links:
+                                    async with page.expect_download(timeout=60000) as download_info:
+                                        await download_links[0].click()
+                                    download = await download_info.value
+                                    temp_path = await download.path()
+                                    if temp_path:
+                                        with open(temp_path, "rb") as f:
+                                            file_content = f.read()
+                                        if len(file_content) > 0:
+                                            store = await Actor.open_key_value_store()
+                                            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+                                            file_key = f"{opp_id}/{safe_filename}"
+                                            await store.set_value(file_key, file_content)
+                                            file_info["storageKey"] = file_key
+                                            file_info["downloadedSize"] = len(file_content)
+                                            Actor.log.info(f"Downloaded via click: {filename} ({len(file_content):,} bytes)")
+                                            if extract_text and filename.lower().endswith('.pdf'):
+                                                text = extract_pdf_text(file_content)
+                                                if text:
+                                                    result["texts"].append({"filename": filename, "text": text[:50000]})
+                                            download_success = True
+                            except Exception as click_err:
+                                Actor.log.debug(f"Click download failed: {click_err}")
 
-                            download = await download_info.value
+                            # If click didn't work, try direct navigation with session
+                            if not download_success:
+                                try:
+                                    # Use page.request to fetch with browser's cookies
+                                    response = await page.request.get(download_url)
+                                    if response.ok:
+                                        file_content = await response.body()
+                                        if len(file_content) > 0:
+                                            store = await Actor.open_key_value_store()
+                                            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+                                            file_key = f"{opp_id}/{safe_filename}"
+                                            await store.set_value(file_key, file_content)
+                                            file_info["storageKey"] = file_key
+                                            file_info["downloadedSize"] = len(file_content)
+                                            Actor.log.info(f"Downloaded via fetch: {filename} ({len(file_content):,} bytes)")
+                                            if extract_text and filename.lower().endswith('.pdf'):
+                                                text = extract_pdf_text(file_content)
+                                                if text:
+                                                    result["texts"].append({"filename": filename, "text": text[:50000]})
+                                            download_success = True
+                                    else:
+                                        Actor.log.debug(f"Fetch failed with status {response.status}")
+                                except Exception as fetch_err:
+                                    Actor.log.debug(f"Fetch download failed: {fetch_err}")
 
-                            # Save to temp path and read content
-                            temp_path = await download.path()
-                            if temp_path:
-                                with open(temp_path, "rb") as f:
-                                    file_content = f.read()
-
-                                if len(file_content) > 0:
-                                    # Store file in key-value store
-                                    store = await Actor.open_key_value_store()
-                                    safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
-                                    file_key = f"{opp_id}/{safe_filename}"
-                                    await store.set_value(file_key, file_content)
-                                    file_info["storageKey"] = file_key
-                                    file_info["downloadedSize"] = len(file_content)
-
-                                    Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes)")
-
-                                    # Extract text if enabled and it's a PDF
-                                    if extract_text and filename.lower().endswith('.pdf'):
-                                        text = extract_pdf_text(file_content)
-                                        if text:
-                                            result["texts"].append({
-                                                "filename": filename,
-                                                "text": text[:50000],
-                                            })
-
-                                    download_success = True
                         except Exception as e:
                             Actor.log.debug(f"Playwright download failed for {filename}: {e}")
                         finally:
