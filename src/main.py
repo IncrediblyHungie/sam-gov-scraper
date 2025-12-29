@@ -4,7 +4,7 @@ SAM.gov Federal Contract Scraper with Attachment Download
 The only Apify actor that downloads actual RFP documents, SOWs, and attachments
 from federal contract opportunities - NO API KEY REQUIRED.
 
-Uses SAM.gov's internal API endpoints with proxy support for reliable downloads.
+Uses SAM.gov's internal API endpoints with Playwright browser for reliable downloads.
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 
 import httpx
 from apify import Actor
+from playwright.async_api import async_playwright, Browser
 
 
 # SAM.gov internal API endpoints (no API key required)
@@ -22,24 +23,6 @@ SAM_SEARCH_URL = "https://sam.gov/api/prod/sgs/v1/search/"
 SAM_DETAILS_URL = "https://sam.gov/api/prod/opps/v2/opportunities"
 SAM_RESOURCES_URL = "https://sam.gov/api/prod/opps/v3/opportunities"
 SAM_DOWNLOAD_URL = "https://sam.gov/api/prod/opps/v3/opportunities/resources/files"
-
-# Browser-like headers to avoid blocking
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-}
 
 # JSON API headers
 JSON_HEADERS = {
@@ -84,76 +67,84 @@ async def main():
         Actor.log.info(f"Download attachments: {download_attachments}")
         Actor.log.info(f"Max opportunities: {max_opportunities}")
 
-        # Try to get proxy configuration for downloads
-        proxy_url = None
-        try:
-            proxy_config = await Actor.create_proxy_configuration(
-                groups=["RESIDENTIAL"],
-                country_code="US",
-            )
-            if proxy_config:
-                proxy_url = await proxy_config.new_url()
-                Actor.log.info(f"Using residential proxy for downloads")
-        except Exception as e:
-            Actor.log.warning(f"Proxy not available: {e}. Downloads may fail from datacenter IPs.")
+        # Initialize Playwright browser for downloads
+        browser = None
+        browser_context = None
+        if download_attachments:
+            try:
+                playwright = await async_playwright().start()
+                browser = await playwright.chromium.launch(headless=True)
+                browser_context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    accept_downloads=True,
+                )
+                Actor.log.info("Playwright browser initialized for downloads")
+            except Exception as e:
+                Actor.log.warning(f"Failed to initialize Playwright: {e}. Downloads may fail.")
 
         opportunities_fetched = 0
         seen_ids = set()
 
-        # Create HTTP client with longer timeout
-        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
-            page = 0
-            page_size = 25
+        try:
+            # Create HTTP client with longer timeout
+            async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
+                page = 0
+                page_size = 25
 
-            while opportunities_fetched < max_opportunities:
-                Actor.log.info(f"Fetching page {page + 1}...")
+                while opportunities_fetched < max_opportunities:
+                    Actor.log.info(f"Fetching page {page + 1}...")
 
-                # Build search query
-                opportunities = await search_opportunities(
-                    client,
-                    keywords=keywords,
-                    naics_codes=naics_codes,
-                    posted_within_days=posted_within_days,
-                    set_aside_types=set_aside_types,
-                    states=states,
-                    opportunity_types=opportunity_types,
-                    page=page,
-                    page_size=page_size,
-                )
+                    # Build search query
+                    opportunities = await search_opportunities(
+                        client,
+                        keywords=keywords,
+                        naics_codes=naics_codes,
+                        posted_within_days=posted_within_days,
+                        set_aside_types=set_aside_types,
+                        states=states,
+                        opportunity_types=opportunity_types,
+                        page=page,
+                        page_size=page_size,
+                    )
 
-                if not opportunities:
-                    Actor.log.info("No more opportunities found")
-                    break
-
-                for opp in opportunities:
-                    if opportunities_fetched >= max_opportunities:
+                    if not opportunities:
+                        Actor.log.info("No more opportunities found")
                         break
 
-                    opp_id = opp.get("_id")
-                    if opp_id in seen_ids:
-                        continue
-                    seen_ids.add(opp_id)
+                    for opp in opportunities:
+                        if opportunities_fetched >= max_opportunities:
+                            break
 
-                    # Get full details and attachments
-                    try:
-                        opportunity_data = await process_opportunity(
-                            client, opp, download_attachments, extract_text, proxy_url
-                        )
+                        opp_id = opp.get("_id")
+                        if opp_id in seen_ids:
+                            continue
+                        seen_ids.add(opp_id)
 
-                        # Push to dataset
-                        await Actor.push_data(opportunity_data)
-                        opportunities_fetched += 1
+                        # Get full details and attachments
+                        try:
+                            opportunity_data = await process_opportunity(
+                                client, opp, download_attachments, extract_text, browser_context
+                            )
 
-                        if opportunities_fetched % 10 == 0:
-                            Actor.log.info(f"Processed {opportunities_fetched} opportunities")
-                    except Exception as e:
-                        Actor.log.warning(f"Failed to process opportunity {opp_id}: {e}")
-                        continue
+                            # Push to dataset
+                            await Actor.push_data(opportunity_data)
+                            opportunities_fetched += 1
 
-                page += 1
-                await asyncio.sleep(0.5)  # Be nice to SAM.gov
+                            if opportunities_fetched % 10 == 0:
+                                Actor.log.info(f"Processed {opportunities_fetched} opportunities")
+                        except Exception as e:
+                            Actor.log.warning(f"Failed to process opportunity {opp_id}: {e}")
+                            continue
 
-        Actor.log.info(f"Scrape complete! Total opportunities: {opportunities_fetched}")
+                    page += 1
+                    await asyncio.sleep(0.5)  # Be nice to SAM.gov
+
+            Actor.log.info(f"Scrape complete! Total opportunities: {opportunities_fetched}")
+        finally:
+            if browser_context:
+                await browser_context.close()
+            if browser:
+                await browser.close()
 
 
 async def search_opportunities(
@@ -224,7 +215,7 @@ async def process_opportunity(
     opp: Dict[str, Any],
     download_attachments: bool,
     extract_text: bool,
-    proxy_url: Optional[str] = None,
+    browser_context=None,
 ) -> Dict[str, Any]:
     """Process a single opportunity and optionally download attachments."""
 
@@ -320,7 +311,7 @@ async def process_opportunity(
     # Get attachments if enabled
     if download_attachments:
         attachments = await get_and_download_attachments(
-            client, opp_id, extract_text, proxy_url
+            client, opp_id, extract_text, browser_context
         )
         opportunity_data["attachments"] = attachments.get("files", [])
         if extract_text:
@@ -348,9 +339,9 @@ async def get_and_download_attachments(
     client: httpx.AsyncClient,
     opp_id: str,
     extract_text: bool,
-    proxy_url: Optional[str] = None,
+    browser_context=None,
 ) -> Dict[str, Any]:
-    """Get attachment list and optionally download files."""
+    """Get attachment list and optionally download files using Playwright."""
 
     result = {
         "files": [],
@@ -371,114 +362,107 @@ async def get_and_download_attachments(
         if not attachment_lists:
             return result
 
-        # Create a download client with proxy if available
-        download_client = None
-        if proxy_url:
-            download_client = httpx.AsyncClient(
-                timeout=120.0,
-                follow_redirects=True,
-                proxy=proxy_url  # httpx uses 'proxy' not 'proxies'
-            )
+        # Process all attachment lists (usually just one)
+        for att_list in attachment_lists:
+            attachments = att_list.get("attachments", []) or []
 
-        try:
-            # Process all attachment lists (usually just one)
-            for att_list in attachment_lists:
-                attachments = att_list.get("attachments", []) or []
+            for attachment in attachments:
+                if not attachment:
+                    continue
+                if attachment.get("deletedFlag") == "1":
+                    continue
 
-                for attachment in attachments:
-                    if not attachment:
-                        continue
-                    if attachment.get("deletedFlag") == "1":
-                        continue
+                resource_id = attachment.get("resourceId")
+                filename = attachment.get("name", "unknown")
+                file_type = attachment.get("mimeType", "")
+                file_size = attachment.get("size", 0)
+                access_level = attachment.get("accessLevel", "public")
 
-                    resource_id = attachment.get("resourceId")
-                    filename = attachment.get("name", "unknown")
-                    file_type = attachment.get("mimeType", "")
-                    file_size = attachment.get("size", 0)
-                    access_level = attachment.get("accessLevel", "public")
+                if not resource_id:
+                    continue
 
-                    if not resource_id:
-                        continue
+                # Build download URL (always include for manual download fallback)
+                download_url = f"https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download"
 
-                    # Build download URL (always include for manual download fallback)
-                    download_url = f"https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download"
+                file_info = {
+                    "filename": filename,
+                    "type": file_type,
+                    "size": file_size,
+                    "resourceId": resource_id,
+                    "accessLevel": access_level,
+                    "postedDate": attachment.get("postedDate"),
+                    "downloadUrl": download_url,
+                }
 
-                    file_info = {
-                        "filename": filename,
-                        "type": file_type,
-                        "size": file_size,
-                        "resourceId": resource_id,
-                        "accessLevel": access_level,
-                        "postedDate": attachment.get("postedDate"),
-                        "downloadUrl": download_url,
-                    }
+                # Skip non-public files
+                if access_level != "public":
+                    Actor.log.info(f"Skipping non-public file: {filename}")
+                    file_info["downloadError"] = "Non-public access level"
+                    result["files"].append(file_info)
+                    continue
 
-                    # Skip non-public files
-                    if access_level != "public":
-                        Actor.log.info(f"Skipping non-public file: {filename}")
-                        file_info["downloadError"] = "Non-public access level"
-                        result["files"].append(file_info)
-                        continue
+                # Attempt download using Playwright browser
+                download_success = False
 
-                    # Attempt download with proxy client first, then regular client
-                    download_success = False
-
-                    for attempt, dl_client in enumerate([download_client, client] if download_client else [client]):
-                        if dl_client is None:
-                            continue
+                if browser_context:
+                    try:
+                        # Create a new page for this download
+                        page = await browser_context.new_page()
 
                         try:
-                            # Use browser-like headers for download
-                            dl_headers = HEADERS.copy()
-                            dl_headers["Referer"] = f"https://sam.gov/opp/{opp_id}/view"
+                            # First navigate to the opportunity page to establish session
+                            await page.goto(f"https://sam.gov/opp/{opp_id}/view", wait_until="domcontentloaded", timeout=30000)
+                            await asyncio.sleep(1)  # Wait for any JS to execute
 
-                            file_response = await dl_client.get(download_url, headers=dl_headers)
+                            # Now try to download the file
+                            async with page.expect_download(timeout=60000) as download_info:
+                                await page.goto(download_url)
 
-                            if file_response.status_code == 200 and len(file_response.content) > 0:
-                                file_content = file_response.content
+                            download = await download_info.value
 
-                                # Store file in key-value store
-                                store = await Actor.open_key_value_store()
-                                # Sanitize filename for storage key
-                                safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
-                                file_key = f"{opp_id}/{safe_filename}"
-                                await store.set_value(file_key, file_content)
-                                file_info["storageKey"] = file_key
-                                file_info["downloadedSize"] = len(file_content)
+                            # Save to temp path and read content
+                            temp_path = await download.path()
+                            if temp_path:
+                                with open(temp_path, "rb") as f:
+                                    file_content = f.read()
 
-                                proxy_note = "(via proxy)" if attempt == 0 and download_client else ""
-                                Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes) {proxy_note}")
+                                if len(file_content) > 0:
+                                    # Store file in key-value store
+                                    store = await Actor.open_key_value_store()
+                                    safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+                                    file_key = f"{opp_id}/{safe_filename}"
+                                    await store.set_value(file_key, file_content)
+                                    file_info["storageKey"] = file_key
+                                    file_info["downloadedSize"] = len(file_content)
 
-                                # Extract text if enabled and it's a PDF
-                                if extract_text and filename.lower().endswith('.pdf'):
-                                    text = extract_pdf_text(file_content)
-                                    if text:
-                                        result["texts"].append({
-                                            "filename": filename,
-                                            "text": text[:50000],  # Limit text length
-                                        })
+                                    Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes)")
 
-                                download_success = True
-                                break  # Success, don't try other clients
-                            else:
-                                Actor.log.debug(f"Attempt {attempt + 1} failed for {filename}: status {file_response.status_code}")
+                                    # Extract text if enabled and it's a PDF
+                                    if extract_text and filename.lower().endswith('.pdf'):
+                                        text = extract_pdf_text(file_content)
+                                        if text:
+                                            result["texts"].append({
+                                                "filename": filename,
+                                                "text": text[:50000],
+                                            })
 
+                                    download_success = True
                         except Exception as e:
-                            Actor.log.debug(f"Attempt {attempt + 1} error for {filename}: {e}")
-                            continue
+                            Actor.log.debug(f"Playwright download failed for {filename}: {e}")
+                        finally:
+                            await page.close()
 
-                    if not download_success:
-                        # Download failed, but we still provide the URL for manual download
-                        file_info["downloadError"] = "Download blocked (403). Use downloadUrl to fetch manually."
-                        Actor.log.warning(f"Could not download {filename} - URL provided in output for manual download")
+                    except Exception as e:
+                        Actor.log.debug(f"Playwright error for {filename}: {e}")
 
-                    result["files"].append(file_info)
+                if not download_success:
+                    # Download failed, but we still provide the URL for manual download
+                    file_info["downloadError"] = "Download blocked. Use downloadUrl to fetch manually from browser."
+                    Actor.log.warning(f"Could not download {filename} - URL provided in output")
 
-            Actor.log.info(f"Processed {len(result['files'])} attachments for {opp_id}")
+                result["files"].append(file_info)
 
-        finally:
-            if download_client:
-                await download_client.aclose()
+        Actor.log.info(f"Processed {len(result['files'])} attachments for {opp_id}")
 
     except Exception as e:
         Actor.log.warning(f"Failed to get attachments for {opp_id}: {e}")
