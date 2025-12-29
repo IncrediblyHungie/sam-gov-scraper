@@ -1,27 +1,148 @@
 {
     "title": "SAM.gov Scraper Input",
-    "description": "Configure your SAM.gov federal contract scraper - NO API KEY REQUIRED",
+    "description": "Scrape federal contract opportunities from SAM.gov with full attachment download - NO API KEY REQUIRED",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "keywords": {
-            "title": "Keywords",
+            "title": "Search Keywords",
             "type": "string",
-            "description": "Search keywords to filter opportunities (e.g., 'software development', 'IT services')",
-            "editor": "textfield"
+            "description": "Search terms to filter opportunities (e.g., 'software development', 'cybersecurity', 'cloud migration')",
+            "editor": "textfield",
+            "prefill": ""
         },
         "naicsCodes": {
             "title": "NAICS Codes",
             "type": "array",
-            "description": "Filter by NAICS codes (e.g., 541511 for Custom Computer Programming)",
+            "description": "Filter by industry codes. Common IT codes: 541511 (Programming), 541512 (Systems Design), 541519 (Other IT), 518210 (Data/Hosting)",
             "default": [],
-            "editor": "stringList",
+            "editor": "select",
             "items": {
                 "type": "string"
-            }
+            },
+            "enum": [
+                "541511",
+                "541512",
+                "541519",
+                "518210",
+                "541690",
+                "541330",
+                "541611",
+                "541614",
+                "541618",
+                "561210"
+            ],
+            "enumTitles": [
+                "541511 - Custom Computer Programming",
+                "541512 - Computer Systems Design",
+                "541519 - Other Computer Related Services",
+                "518210 - Data Processing & Hosting",
+                "541690 - Scientific/Technical Consulting",
+                "541330 - Engineering Services",
+                "541611 - Admin/Management Consulting",
+                "541614 - Process/Logistics Consulting",
+                "541618 - Other Management Consulting",
+                "561210 - Facilities Support Services"
+            ]
+        },
+        "setAsideTypes": {
+            "title": "Set-Aside Types",
+            "type": "array",
+            "description": "Filter by small business set-aside programs",
+            "default": [],
+            "editor": "select",
+            "items": {
+                "type": "string"
+            },
+            "enum": [
+                "SBA",
+                "8A",
+                "8AN",
+                "HZC",
+                "HZS",
+                "SDVOSBC",
+                "SDVOSBS",
+                "WOSB",
+                "EDWOSB",
+                "VSA",
+                "VSB"
+            ],
+            "enumTitles": [
+                "SBA - Total Small Business Set-Aside",
+                "8A - 8(a) Sole Source",
+                "8AN - 8(a) Competitive",
+                "HZC - HUBZone Set-Aside",
+                "HZS - HUBZone Sole Source",
+                "SDVOSBC - Service-Disabled Veteran-Owned (Competitive)",
+                "SDVOSBS - Service-Disabled Veteran-Owned (Sole Source)",
+                "WOSB - Women-Owned Small Business",
+                "EDWOSB - Economically Disadvantaged WOSB",
+                "VSA - Veteran-Owned Set-Aside",
+                "VSB - Veteran-Owned Sole Source"
+            ]
+        },
+        "opportunityTypes": {
+            "title": "Opportunity Types",
+            "type": "array",
+            "description": "Filter by the type of opportunity",
+            "default": [],
+            "editor": "select",
+            "items": {
+                "type": "string"
+            },
+            "enum": [
+                "o",
+                "k",
+                "p",
+                "r",
+                "s",
+                "g",
+                "a",
+                "i",
+                "u"
+            ],
+            "enumTitles": [
+                "Solicitation",
+                "Combined Synopsis/Solicitation",
+                "Presolicitation",
+                "Sources Sought",
+                "Special Notice",
+                "Sale of Surplus Property",
+                "Award Notice",
+                "Intent to Bundle",
+                "Justification & Approval"
+            ]
+        },
+        "states": {
+            "title": "Place of Performance States",
+            "type": "array",
+            "description": "Filter by state where work will be performed",
+            "default": [],
+            "editor": "select",
+            "items": {
+                "type": "string"
+            },
+            "enum": [
+                "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL",
+                "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME",
+                "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH",
+                "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
+                "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+            ],
+            "enumTitles": [
+                "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+                "Connecticut", "Delaware", "Washington DC", "Florida", "Georgia",
+                "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky",
+                "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
+                "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire",
+                "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota",
+                "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode Island", "South Carolina",
+                "South Dakota", "Tennessee", "Texas", "Utah", "Vermont", "Virginia",
+                "Washington", "West Virginia", "Wisconsin", "Wyoming"
+            ]
         },
         "postedWithinDays": {
-            "title": "Posted Within Days",
+            "title": "Posted Within (Days)",
             "type": "integer",
             "description": "Only fetch opportunities posted within this many days",
             "default": 30,
@@ -29,58 +150,26 @@
             "maximum": 365,
             "editor": "number"
         },
-        "setAsideTypes": {
-            "title": "Set-Aside Types",
-            "type": "array",
-            "description": "Filter by set-aside type codes (SBA, 8A, HUBZone, SDVOSBC, WOSB, etc.)",
-            "default": [],
-            "editor": "stringList",
-            "items": {
-                "type": "string"
-            }
-        },
-        "states": {
-            "title": "States",
-            "type": "array",
-            "description": "Filter by state codes (e.g., CA, TX, VA)",
-            "default": [],
-            "editor": "stringList",
-            "items": {
-                "type": "string"
-            }
-        },
-        "opportunityTypes": {
-            "title": "Opportunity Types",
-            "type": "array",
-            "description": "Filter by opportunity type codes: o=Solicitation, k=Combined Synopsis/Solicitation, p=Presolicitation, r=Sources Sought, s=Special Notice, g=Sale of Surplus",
-            "default": [],
-            "editor": "stringList",
-            "items": {
-                "type": "string"
-            }
-        },
-        "downloadAttachments": {
-            "title": "Download Attachments",
-            "type": "boolean",
-            "description": "Download RFPs, SOWs, and other documents attached to opportunities",
-            "default": true,
-            "editor": "checkbox"
-        },
-        "extractText": {
-            "title": "Extract PDF Text",
-            "type": "boolean",
-            "description": "Extract text content from PDF attachments for searching/analysis",
-            "default": false,
-            "editor": "checkbox"
-        },
         "maxOpportunities": {
-            "title": "Maximum Opportunities",
+            "title": "Maximum Results",
             "type": "integer",
-            "description": "Maximum number of opportunities to scrape",
+            "description": "Maximum number of opportunities to scrape (higher = longer runtime)",
             "default": 100,
             "minimum": 1,
             "maximum": 10000,
             "editor": "number"
+        },
+        "downloadAttachments": {
+            "title": "Download Attachments",
+            "type": "boolean",
+            "description": "Download RFPs, SOWs, pricing templates, and other documents",
+            "default": true
+        },
+        "extractText": {
+            "title": "Extract PDF Text",
+            "type": "boolean",
+            "description": "Extract searchable text from PDF attachments (slower but enables full-text search)",
+            "default": false
         }
     }
 }
