@@ -1,0 +1,89 @@
+{
+    "title": "SAM.gov Scraper Input",
+    "description": "Configure your federal contract opportunity search",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "keywords": {
+            "title": "Keywords",
+            "type": "string",
+            "description": "Search keywords (e.g., 'software development', 'IT services')",
+            "editor": "textfield"
+        },
+        "naicsCodes": {
+            "title": "NAICS Codes",
+            "type": "array",
+            "description": "Filter by NAICS codes (e.g., 541511 for Custom Computer Programming)",
+            "editor": "stringList",
+            "default": ["541511", "541512", "541519"],
+            "items": {
+                "type": "string"
+            }
+        },
+        "postedWithinDays": {
+            "title": "Posted Within (Days)",
+            "type": "integer",
+            "description": "Only fetch opportunities posted within this many days",
+            "default": 30,
+            "minimum": 1,
+            "maximum": 365
+        },
+        "setAsideTypes": {
+            "title": "Set-Aside Types",
+            "type": "array",
+            "description": "Filter by set-aside type (leave empty for all)",
+            "editor": "select",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "SBA",
+                    "8A",
+                    "HUBZone",
+                    "SDVOSBC",
+                    "WOSB",
+                    "EDWOSB",
+                    "SBP",
+                    "VSA",
+                    "VSB"
+                ]
+            }
+        },
+        "states": {
+            "title": "States",
+            "type": "array",
+            "description": "Filter by place of performance state (e.g., CA, TX, VA)",
+            "editor": "stringList",
+            "items": {
+                "type": "string"
+            }
+        },
+        "downloadAttachments": {
+            "title": "Download Attachments",
+            "type": "boolean",
+            "description": "Download RFPs, SOWs, and other attachments (PDFs, Word docs, etc.)",
+            "default": true
+        },
+        "extractText": {
+            "title": "Extract Text from Documents",
+            "type": "boolean",
+            "description": "Extract text content from PDFs and documents for searching",
+            "default": false
+        },
+        "maxOpportunities": {
+            "title": "Max Opportunities",
+            "type": "integer",
+            "description": "Maximum number of opportunities to fetch",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 1000
+        },
+        "apiKey": {
+            "title": "SAM.gov API Key",
+            "type": "string",
+            "description": "Your SAM.gov API key (get one at https://sam.gov/content/entity-api)",
+            "editor": "textfield",
+            "isSecret": true
+        }
+    },
+    "required": ["apiKey"]
+}
