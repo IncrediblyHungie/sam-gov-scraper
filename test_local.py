@@ -2,6 +2,7 @@
 """
 Local test script for SAM.gov scraper.
 Tests the core functionality without the Apify runtime.
+NO API KEY REQUIRED.
 """
 
 import asyncio
@@ -10,180 +11,224 @@ from datetime import datetime, timedelta
 
 import httpx
 
-# SAM.gov API endpoints
-SAM_API_BASE = "https://api.sam.gov/opportunities/v2"
-SAM_ATTACHMENT_BASE = "https://api.sam.gov/opportunities/v1/noauth"
+# SAM.gov internal API endpoints
+SAM_SEARCH_URL = "https://sam.gov/api/prod/sgs/v1/search/"
+SAM_DETAILS_URL = "https://sam.gov/api/prod/opps/v2/opportunities"
+SAM_RESOURCES_URL = "https://sam.gov/api/prod/opps/v3/opportunities"
+SAM_DOWNLOAD_URL = "https://sam.gov/api/prod/opps/v3/opportunities/resources/files"
 
-# Get API key from BidKing config
-import sys
-sys.path.insert(0, '/home/peteylinux/Projects/BidKing')
-
-try:
-    from app.config import settings
-    API_KEY = settings.sam_gov_api_key
-except:
-    API_KEY = None
+HEADERS = {
+    "Accept": "application/hal+json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
 
 
 async def test_search():
     """Test basic opportunity search."""
     print("\n" + "="*60)
-    print("TEST 1: Basic Opportunity Search")
+    print("TEST 1: Basic Opportunity Search (NO API KEY)")
     print("="*60)
 
-    if not API_KEY:
-        print("ERROR: No API key found. Set SAM_GOV_API_KEY or check BidKing config.")
-        return None
-
-    posted_from = (datetime.utcnow() - timedelta(days=7)).strftime("%m/%d/%Y")
-    posted_to = datetime.utcnow().strftime("%m/%d/%Y")
-
     params = {
-        "api_key": API_KEY,
-        "postedFrom": posted_from,
-        "postedTo": posted_to,
-        "ncode": "541511",  # Custom Computer Programming
-        "limit": 5,
-        "offset": 0,
+        "random": int(datetime.utcnow().timestamp()),
+        "index": "opp",
+        "page": 0,
+        "mode": "search",
+        "sort": "-modifiedDate",
+        "size": 5,
+        "is_active": "true",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(f"{SAM_API_BASE}/search", params=params)
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(SAM_SEARCH_URL, params=params, headers=HEADERS)
         print(f"Status: {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
-            opportunities = data.get("opportunitiesData", [])
+            opportunities = data.get("_embedded", {}).get("results", [])
             print(f"Found {len(opportunities)} opportunities")
 
             if opportunities:
                 opp = opportunities[0]
                 print(f"\nFirst opportunity:")
-                print(f"  Notice ID: {opp.get('noticeId')}")
+                print(f"  ID: {opp.get('_id')}")
                 print(f"  Title: {opp.get('title', '')[:80]}")
-                print(f"  Type: {opp.get('type')}")
-                print(f"  Posted: {opp.get('postedDate')}")
-                print(f"  Deadline: {opp.get('responseDeadLine')}")
-                print(f"  Agency: {opp.get('fullParentPathName', '')[:50]}")
-                return opp.get('noticeId')
+                print(f"  Type: {opp.get('type', {}).get('value')}")
+                print(f"  Posted: {opp.get('publishDate')}")
+                print(f"  Deadline: {opp.get('responseDate')}")
+
+                org = opp.get('organizationHierarchy', [])
+                if org:
+                    print(f"  Agency: {org[0].get('name', '')[:50]}")
+
+                return opp.get('_id')
         else:
             print(f"Error: {response.text[:500]}")
             return None
 
 
-async def test_attachments(notice_id: str):
-    """Test attachment metadata retrieval."""
+async def test_details(opp_id: str):
+    """Test opportunity details retrieval."""
     print("\n" + "="*60)
-    print(f"TEST 2: Attachment Metadata for {notice_id}")
+    print(f"TEST 2: Opportunity Details for {opp_id}")
     print("="*60)
 
-    if not notice_id:
-        print("Skipping - no notice ID")
+    if not opp_id:
+        print("Skipping - no opportunity ID")
         return
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Try to get attachment metadata
-        metadata_url = f"{SAM_ATTACHMENT_BASE}/download/metadata/{notice_id}"
-        response = await client.get(
-            metadata_url,
-            params={"api_key": API_KEY}
-        )
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        url = f"{SAM_DETAILS_URL}/{opp_id}"
+        response = await client.get(url, headers=HEADERS)
         print(f"Status: {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
-            attachments = data.get("opportunityAttachmentList", [])
-            print(f"Found {len(attachments)} attachments")
+            data2 = data.get("data2", {})
 
-            for att in attachments[:5]:
-                print(f"\n  Attachment:")
-                print(f"    Name: {att.get('name')}")
-                print(f"    Type: {att.get('type')}")
-                print(f"    Resource ID: {att.get('resourceId')}")
+            print(f"\nDetails:")
+            print(f"  Title: {data2.get('title', '')[:80]}")
+            print(f"  Solicitation #: {data2.get('solicitationNumber')}")
 
-            return attachments
+            naics = data2.get("naics", [])
+            if naics:
+                print(f"  NAICS: {naics[0].get('code', [])}")
+
+            print(f"  PSC Code: {data2.get('classificationCode')}")
+
+            contacts = data2.get("pointOfContact", [])
+            if contacts:
+                print(f"  Primary Contact: {contacts[0].get('fullName')}")
+                print(f"  Email: {contacts[0].get('email')}")
+
+            pop = data2.get("placeOfPerformance", {})
+            if pop:
+                city = pop.get("city", {}).get("name", "")
+                state = pop.get("state", {}).get("name", "")
+                print(f"  Location: {city}, {state}")
+
+            return True
         else:
-            print(f"No attachments or error: {response.status_code}")
-            # Try getting the full opportunity details
-            print("\nTrying full opportunity details...")
-            detail_url = f"{SAM_API_BASE}/search"
-            detail_params = {
-                "api_key": API_KEY,
-                "noticeId": notice_id,
-                "limit": 1,
-            }
-            detail_response = await client.get(detail_url, params=detail_params)
-            if detail_response.status_code == 200:
-                detail_data = detail_response.json()
-                opps = detail_data.get("opportunitiesData", [])
-                if opps:
-                    print(f"Opportunity has resourceLinks: {opps[0].get('resourceLinks', [])}")
-            return []
+            print(f"Error: {response.status_code}")
+            return False
 
 
-async def test_download_attachment(notice_id: str, resource_id: str, filename: str):
-    """Test downloading a single attachment."""
+async def test_attachments(opp_id: str):
+    """Test attachment listing and download."""
     print("\n" + "="*60)
-    print(f"TEST 3: Download Attachment {filename}")
+    print(f"TEST 3: Attachments for {opp_id}")
     print("="*60)
 
-    if not notice_id or not resource_id:
-        print("Skipping - no notice ID or resource ID")
+    if not opp_id:
+        print("Skipping - no opportunity ID")
         return
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        download_url = f"{SAM_ATTACHMENT_BASE}/download/{notice_id}/{resource_id}"
-        response = await client.get(
-            download_url,
-            params={"api_key": API_KEY}
-        )
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        # Get attachment list
+        url = f"{SAM_RESOURCES_URL}/{opp_id}/resources"
+        response = await client.get(url, headers=HEADERS)
         print(f"Status: {response.status_code}")
 
         if response.status_code == 200:
-            content = response.content
-            print(f"Downloaded {len(content)} bytes")
-            print(f"Content-Type: {response.headers.get('content-type')}")
+            data = response.json()
+            attachment_lists = data.get("_embedded", {}).get("opportunityAttachmentList", [])
 
-            # Save to local file for inspection
-            with open(f"/tmp/{filename}", "wb") as f:
-                f.write(content)
-            print(f"Saved to /tmp/{filename}")
-            return True
+            if not attachment_lists:
+                print("No attachments found")
+                return
+
+            total_files = 0
+            for att_list in attachment_lists:
+                attachments = att_list.get("attachments", [])
+                total_files += len(attachments)
+
+                print(f"\nFound {len(attachments)} attachments:")
+                for att in attachments[:5]:  # Show first 5
+                    print(f"\n  File: {att.get('name')}")
+                    print(f"    Type: {att.get('mimeType')}")
+                    print(f"    Size: {att.get('size', 0):,} bytes")
+                    print(f"    Resource ID: {att.get('resourceId')}")
+                    print(f"    Access: {att.get('accessLevel')}")
+
+                    # Test download for first public file
+                    if att.get('accessLevel') == 'public' and att.get('resourceId'):
+                        resource_id = att.get('resourceId')
+                        download_url = f"{SAM_DOWNLOAD_URL}/{resource_id}/download"
+
+                        print(f"\n    Testing download...")
+                        dl_response = await client.get(download_url, headers=HEADERS)
+                        if dl_response.status_code == 200:
+                            print(f"    SUCCESS! Downloaded {len(dl_response.content):,} bytes")
+
+                            # Save first file as sample
+                            filename = att.get('name', 'sample_file')
+                            with open(f"/tmp/{filename}", "wb") as f:
+                                f.write(dl_response.content)
+                            print(f"    Saved to /tmp/{filename}")
+                        else:
+                            print(f"    Download failed: {dl_response.status_code}")
+
+                        break  # Only test one download
+
+            print(f"\nTotal attachments: {total_files}")
         else:
-            print(f"Failed: {response.status_code}")
-            return False
+            print(f"Error: {response.status_code}")
+
+
+async def test_filtered_search():
+    """Test search with filters."""
+    print("\n" + "="*60)
+    print("TEST 4: Filtered Search (NAICS 541511 - Computer Programming)")
+    print("="*60)
+
+    params = {
+        "random": int(datetime.utcnow().timestamp()),
+        "index": "opp",
+        "page": 0,
+        "mode": "search",
+        "sort": "-modifiedDate",
+        "size": 5,
+        "is_active": "true",
+        "naics": "541511",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(SAM_SEARCH_URL, params=params, headers=HEADERS)
+        print(f"Status: {response.status_code}")
+
+        if response.status_code == 200:
+            data = response.json()
+            opportunities = data.get("_embedded", {}).get("results", [])
+            print(f"Found {len(opportunities)} opportunities with NAICS 541511")
+
+            for i, opp in enumerate(opportunities[:3]):
+                print(f"\n  {i+1}. {opp.get('title', '')[:60]}...")
+                print(f"     Type: {opp.get('type', {}).get('value')}")
+                print(f"     Deadline: {opp.get('responseDate', 'N/A')}")
 
 
 async def main():
     print("\n" + "="*60)
     print("SAM.gov Scraper Local Test")
+    print("NO API KEY REQUIRED")
     print("="*60)
 
-    if not API_KEY:
-        print("\nERROR: No API key configured!")
-        print("Set the SAM_GOV_API_KEY environment variable or configure BidKing.")
-        return
+    # Test 1: Basic search
+    opp_id = await test_search()
 
-    print(f"\nUsing API key: {API_KEY[:10]}...{API_KEY[-4:]}")
+    # Test 2: Get details
+    if opp_id:
+        await test_details(opp_id)
 
-    # Test 1: Search
-    notice_id = await test_search()
+    # Test 3: Get and download attachments
+    if opp_id:
+        await test_attachments(opp_id)
 
-    # Test 2: Get attachments
-    if notice_id:
-        attachments = await test_attachments(notice_id)
-
-        # Test 3: Download first attachment
-        if attachments:
-            first = attachments[0]
-            await test_download_attachment(
-                notice_id,
-                first.get('resourceId'),
-                first.get('name', 'test_file')
-            )
+    # Test 4: Filtered search
+    await test_filtered_search()
 
     print("\n" + "="*60)
-    print("Tests complete!")
+    print("All tests complete!")
     print("="*60)
 
 
