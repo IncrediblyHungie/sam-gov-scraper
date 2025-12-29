@@ -9,6 +9,8 @@ The **only** Apify actor that downloads actual RFP documents, SOWs, and attachme
 - **No API Key Needed**: Works out of the box, no SAM.gov registration required
 - **Full Opportunity Data**: Title, description, deadlines, agency, NAICS, contacts, set-asides
 - **Attachment Download**: Downloads all RFPs, SOWs, pricing templates, and other documents
+- **Residential Proxy Support**: Uses Apify residential proxies to bypass datacenter IP blocking
+- **Graceful Fallback**: Always provides download URLs even if direct download is blocked
 - **PDF Text Extraction**: Optionally extract text from PDFs for searching/analysis
 - **Flexible Filtering**: Filter by NAICS codes, keywords, set-aside types, states, opportunity types
 - **Bulk Export**: Export to JSON, CSV, or Excel
@@ -141,6 +143,25 @@ No authentication is required for these endpoints.
 ## Rate Limiting
 
 The actor includes built-in delays (0.5s between opportunities) to be respectful of SAM.gov's servers. For large scrapes, consider running during off-peak hours.
+
+## Proxy Support & Download Behavior
+
+SAM.gov blocks downloads from datacenter IPs. This actor handles this gracefully:
+
+1. **Residential Proxy (if available)**: Automatically uses Apify residential proxies for downloads
+2. **Fallback to Direct**: If proxy fails, tries direct download
+3. **Always Provides URLs**: Even if download fails, the `downloadUrl` field is always included
+
+If you see `downloadError` in your results, you can still manually download files using the provided URLs from a residential IP or browser.
+
+### Enabling Residential Proxies
+
+To enable residential proxies for better download success:
+1. Go to your Apify account's Proxy settings
+2. Enable "Residential" proxy group
+3. The actor will automatically use it for downloads
+
+**Note**: Residential proxy usage incurs additional costs. Without residential proxies, you'll still get all opportunity metadata and download URLs, but actual file downloads may fail.
 
 ## License
 

@@ -4,7 +4,7 @@ SAM.gov Federal Contract Scraper with Attachment Download
 The only Apify actor that downloads actual RFP documents, SOWs, and attachments
 from federal contract opportunities - NO API KEY REQUIRED.
 
-Uses SAM.gov's internal API endpoints.
+Uses SAM.gov's internal API endpoints with proxy support for reliable downloads.
 """
 
 import asyncio
@@ -23,9 +23,30 @@ SAM_DETAILS_URL = "https://sam.gov/api/prod/opps/v2/opportunities"
 SAM_RESOURCES_URL = "https://sam.gov/api/prod/opps/v3/opportunities"
 SAM_DOWNLOAD_URL = "https://sam.gov/api/prod/opps/v3/opportunities/resources/files"
 
-# Common headers
+# Browser-like headers to avoid blocking
 HEADERS = {
-    "Accept": "application/hal+json",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
+
+# JSON API headers
+JSON_HEADERS = {
+    "Accept": "application/hal+json, application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://sam.gov/search/",
+    "Origin": "https://sam.gov",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
@@ -63,10 +84,24 @@ async def main():
         Actor.log.info(f"Download attachments: {download_attachments}")
         Actor.log.info(f"Max opportunities: {max_opportunities}")
 
+        # Try to get proxy configuration for downloads
+        proxy_url = None
+        try:
+            proxy_config = await Actor.create_proxy_configuration(
+                groups=["RESIDENTIAL"],
+                country_code="US",
+            )
+            if proxy_config:
+                proxy_url = await proxy_config.new_url()
+                Actor.log.info(f"Using residential proxy for downloads")
+        except Exception as e:
+            Actor.log.warning(f"Proxy not available: {e}. Downloads may fail from datacenter IPs.")
+
         opportunities_fetched = 0
         seen_ids = set()
 
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        # Create HTTP client with longer timeout
+        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
             page = 0
             page_size = 25
 
@@ -102,7 +137,7 @@ async def main():
                     # Get full details and attachments
                     try:
                         opportunity_data = await process_opportunity(
-                            client, opp, download_attachments, extract_text
+                            client, opp, download_attachments, extract_text, proxy_url
                         )
 
                         # Push to dataset
@@ -171,7 +206,7 @@ async def search_opportunities(
         params["opp_type"] = ",".join(opportunity_types)
 
     try:
-        response = await client.get(SAM_SEARCH_URL, params=params, headers=HEADERS)
+        response = await client.get(SAM_SEARCH_URL, params=params, headers=JSON_HEADERS)
         response.raise_for_status()
         data = response.json()
 
@@ -189,6 +224,7 @@ async def process_opportunity(
     opp: Dict[str, Any],
     download_attachments: bool,
     extract_text: bool,
+    proxy_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Process a single opportunity and optionally download attachments."""
 
@@ -281,10 +317,10 @@ async def process_opportunity(
                 "awardeeUei": awardee.get("ueiSAM") if isinstance(awardee, dict) else None,
             }
 
-    # Download attachments if enabled
+    # Get attachments if enabled
     if download_attachments:
         attachments = await get_and_download_attachments(
-            client, opp_id, extract_text
+            client, opp_id, extract_text, proxy_url
         )
         opportunity_data["attachments"] = attachments.get("files", [])
         if extract_text:
@@ -300,7 +336,7 @@ async def get_opportunity_details(
     """Get full opportunity details."""
     try:
         url = f"{SAM_DETAILS_URL}/{opp_id}"
-        response = await client.get(url, headers=HEADERS)
+        response = await client.get(url, headers=JSON_HEADERS)
         response.raise_for_status()
         return response.json()
     except httpx.HTTPError as e:
@@ -312,8 +348,9 @@ async def get_and_download_attachments(
     client: httpx.AsyncClient,
     opp_id: str,
     extract_text: bool,
+    proxy_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get attachment list and download files."""
+    """Get attachment list and optionally download files."""
 
     result = {
         "files": [],
@@ -323,7 +360,7 @@ async def get_and_download_attachments(
     try:
         # Get attachment metadata
         url = f"{SAM_RESOURCES_URL}/{opp_id}/resources"
-        response = await client.get(url, headers=HEADERS)
+        response = await client.get(url, headers=JSON_HEADERS)
 
         if response.status_code != 200:
             return result
@@ -334,87 +371,114 @@ async def get_and_download_attachments(
         if not attachment_lists:
             return result
 
-        # Process all attachment lists (usually just one)
-        for att_list in attachment_lists:
-            attachments = att_list.get("attachments", []) or []
+        # Create a download client with proxy if available
+        download_client = None
+        if proxy_url:
+            download_client = httpx.AsyncClient(
+                timeout=120.0,
+                follow_redirects=True,
+                proxies={"all://": proxy_url}
+            )
 
-            for attachment in attachments:
-                if not attachment:
-                    continue
-                if attachment.get("deletedFlag") == "1":
-                    continue
+        try:
+            # Process all attachment lists (usually just one)
+            for att_list in attachment_lists:
+                attachments = att_list.get("attachments", []) or []
 
-                resource_id = attachment.get("resourceId")
-                filename = attachment.get("name", "unknown")
-                file_type = attachment.get("mimeType", "")
-                file_size = attachment.get("size", 0)
-                access_level = attachment.get("accessLevel", "public")
+                for attachment in attachments:
+                    if not attachment:
+                        continue
+                    if attachment.get("deletedFlag") == "1":
+                        continue
 
-                if not resource_id:
-                    continue
+                    resource_id = attachment.get("resourceId")
+                    filename = attachment.get("name", "unknown")
+                    file_type = attachment.get("mimeType", "")
+                    file_size = attachment.get("size", 0)
+                    access_level = attachment.get("accessLevel", "public")
 
-                # Skip non-public files
-                if access_level != "public":
-                    Actor.log.info(f"Skipping non-public file: {filename}")
-                    continue
+                    if not resource_id:
+                        continue
 
-                file_info = {
-                    "filename": filename,
-                    "type": file_type,
-                    "size": file_size,
-                    "resourceId": resource_id,
-                    "accessLevel": access_level,
-                    "postedDate": attachment.get("postedDate"),
-                    "downloadUrl": f"https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download",
-                }
+                    # Build download URL (always include for manual download fallback)
+                    download_url = f"https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download"
 
-                # Download the file
-                try:
-                    download_url = f"{SAM_DOWNLOAD_URL}/{resource_id}/download"
+                    file_info = {
+                        "filename": filename,
+                        "type": file_type,
+                        "size": file_size,
+                        "resourceId": resource_id,
+                        "accessLevel": access_level,
+                        "postedDate": attachment.get("postedDate"),
+                        "downloadUrl": download_url,
+                    }
 
-                    # First get the redirect URL
-                    head_response = await client.head(download_url, headers=HEADERS)
+                    # Skip non-public files
+                    if access_level != "public":
+                        Actor.log.info(f"Skipping non-public file: {filename}")
+                        file_info["downloadError"] = "Non-public access level"
+                        result["files"].append(file_info)
+                        continue
 
-                    if head_response.status_code in (200, 303, 302):
-                        # Get the actual file - follow redirects
-                        file_response = await client.get(download_url, headers=HEADERS)
+                    # Attempt download with proxy client first, then regular client
+                    download_success = False
 
-                        if file_response.status_code == 200 and len(file_response.content) > 0:
-                            file_content = file_response.content
+                    for attempt, dl_client in enumerate([download_client, client] if download_client else [client]):
+                        if dl_client is None:
+                            continue
 
-                            # Store file in key-value store
-                            store = await Actor.open_key_value_store()
-                            # Sanitize filename for storage key
-                            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
-                            file_key = f"{opp_id}/{safe_filename}"
-                            await store.set_value(file_key, file_content)
-                            file_info["storageKey"] = file_key
-                            file_info["downloadedSize"] = len(file_content)
+                        try:
+                            # Use browser-like headers for download
+                            dl_headers = HEADERS.copy()
+                            dl_headers["Referer"] = f"https://sam.gov/opp/{opp_id}/view"
 
-                            Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes)")
+                            file_response = await dl_client.get(download_url, headers=dl_headers)
 
-                            # Extract text if enabled and it's a PDF
-                            if extract_text and filename.lower().endswith('.pdf'):
-                                text = extract_pdf_text(file_content)
-                                if text:
-                                    result["texts"].append({
-                                        "filename": filename,
-                                        "text": text[:50000],  # Limit text length
-                                    })
-                        else:
-                            Actor.log.warning(f"Empty or failed download for {filename}: status {file_response.status_code}")
-                            file_info["downloadError"] = f"Status {file_response.status_code}"
-                    else:
-                        Actor.log.warning(f"Failed to access {filename}: status {head_response.status_code}")
-                        file_info["downloadError"] = f"Status {head_response.status_code}"
+                            if file_response.status_code == 200 and len(file_response.content) > 0:
+                                file_content = file_response.content
 
-                except Exception as e:
-                    Actor.log.warning(f"Failed to download {filename}: {e}")
-                    file_info["downloadError"] = str(e)
+                                # Store file in key-value store
+                                store = await Actor.open_key_value_store()
+                                # Sanitize filename for storage key
+                                safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+                                file_key = f"{opp_id}/{safe_filename}"
+                                await store.set_value(file_key, file_content)
+                                file_info["storageKey"] = file_key
+                                file_info["downloadedSize"] = len(file_content)
 
-                result["files"].append(file_info)
+                                proxy_note = "(via proxy)" if attempt == 0 and download_client else ""
+                                Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes) {proxy_note}")
 
-        Actor.log.info(f"Processed {len(result['files'])} attachments for {opp_id}")
+                                # Extract text if enabled and it's a PDF
+                                if extract_text and filename.lower().endswith('.pdf'):
+                                    text = extract_pdf_text(file_content)
+                                    if text:
+                                        result["texts"].append({
+                                            "filename": filename,
+                                            "text": text[:50000],  # Limit text length
+                                        })
+
+                                download_success = True
+                                break  # Success, don't try other clients
+                            else:
+                                Actor.log.debug(f"Attempt {attempt + 1} failed for {filename}: status {file_response.status_code}")
+
+                        except Exception as e:
+                            Actor.log.debug(f"Attempt {attempt + 1} error for {filename}: {e}")
+                            continue
+
+                    if not download_success:
+                        # Download failed, but we still provide the URL for manual download
+                        file_info["downloadError"] = "Download blocked (403). Use downloadUrl to fetch manually."
+                        Actor.log.warning(f"Could not download {filename} - URL provided in output for manual download")
+
+                    result["files"].append(file_info)
+
+            Actor.log.info(f"Processed {len(result['files'])} attachments for {opp_id}")
+
+        finally:
+            if download_client:
+                await download_client.aclose()
 
     except Exception as e:
         Actor.log.warning(f"Failed to get attachments for {opp_id}: {e}")
