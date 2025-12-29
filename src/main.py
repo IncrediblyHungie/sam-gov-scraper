@@ -9,7 +9,7 @@ Uses SAM.gov's internal API endpoints.
 
 import asyncio
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlencode
 
@@ -26,8 +26,17 @@ SAM_DOWNLOAD_URL = "https://sam.gov/api/prod/opps/v3/opportunities/resources/fil
 # Common headers
 HEADERS = {
     "Accept": "application/hal+json",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
+
+
+def safe_get(obj: Any, *keys, default=None) -> Any:
+    """Safely get nested dictionary values."""
+    for key in keys:
+        if obj is None or not isinstance(obj, dict):
+            return default
+        obj = obj.get(key)
+    return obj if obj is not None else default
 
 
 async def main():
@@ -48,7 +57,11 @@ async def main():
         Actor.log.info("Starting SAM.gov scrape (NO API KEY REQUIRED)")
         Actor.log.info(f"Keywords: {keywords or 'None'}")
         Actor.log.info(f"NAICS codes: {naics_codes or 'All'}")
+        Actor.log.info(f"Set-aside types: {set_aside_types or 'All'}")
+        Actor.log.info(f"States: {states or 'All'}")
+        Actor.log.info(f"Posted within: {posted_within_days} days")
         Actor.log.info(f"Download attachments: {download_attachments}")
+        Actor.log.info(f"Max opportunities: {max_opportunities}")
 
         opportunities_fetched = 0
         seen_ids = set()
@@ -87,16 +100,20 @@ async def main():
                     seen_ids.add(opp_id)
 
                     # Get full details and attachments
-                    opportunity_data = await process_opportunity(
-                        client, opp, download_attachments, extract_text
-                    )
+                    try:
+                        opportunity_data = await process_opportunity(
+                            client, opp, download_attachments, extract_text
+                        )
 
-                    # Push to dataset
-                    await Actor.push_data(opportunity_data)
-                    opportunities_fetched += 1
+                        # Push to dataset
+                        await Actor.push_data(opportunity_data)
+                        opportunities_fetched += 1
 
-                    if opportunities_fetched % 10 == 0:
-                        Actor.log.info(f"Processed {opportunities_fetched} opportunities")
+                        if opportunities_fetched % 10 == 0:
+                            Actor.log.info(f"Processed {opportunities_fetched} opportunities")
+                    except Exception as e:
+                        Actor.log.warning(f"Failed to process opportunity {opp_id}: {e}")
+                        continue
 
                 page += 1
                 await asyncio.sleep(0.5)  # Be nice to SAM.gov
@@ -119,7 +136,7 @@ async def search_opportunities(
 
     # Build query parameters
     params = {
-        "random": int(datetime.utcnow().timestamp()),
+        "random": int(datetime.now(timezone.utc).timestamp()),
         "index": "opp",
         "page": page,
         "mode": "search",
@@ -138,7 +155,7 @@ async def search_opportunities(
 
     # Add posted date filter
     if posted_within_days:
-        from_date = (datetime.utcnow() - timedelta(days=posted_within_days)).strftime("%m/%d/%Y")
+        from_date = (datetime.now(timezone.utc) - timedelta(days=posted_within_days)).strftime("%m/%d/%Y")
         params["postedFrom"] = from_date
 
     # Add set-aside filter
@@ -178,13 +195,13 @@ async def process_opportunity(
     opp_id = opp.get("_id", "")
 
     # Extract basic data from search result
-    org_hierarchy = opp.get("organizationHierarchy", [])
+    org_hierarchy = opp.get("organizationHierarchy", []) or []
     agency_name = org_hierarchy[0].get("name") if org_hierarchy else None
     sub_agency_name = org_hierarchy[1].get("name") if len(org_hierarchy) > 1 else None
     office_name = org_hierarchy[-1].get("name") if org_hierarchy else None
 
     # Get description
-    descriptions = opp.get("descriptions", [])
+    descriptions = opp.get("descriptions", []) or []
     description = descriptions[0].get("content", "") if descriptions else ""
 
     # Build opportunity record
@@ -193,8 +210,8 @@ async def process_opportunity(
         "solicitationNumber": opp.get("solicitationNumber"),
         "title": opp.get("title"),
         "description": description,
-        "type": opp.get("type", {}).get("value"),
-        "typeCode": opp.get("type", {}).get("code"),
+        "type": safe_get(opp, "type", "value"),
+        "typeCode": safe_get(opp, "type", "code"),
         "postedDate": opp.get("publishDate"),
         "modifiedDate": opp.get("modifiedDate"),
         "responseDeadline": opp.get("responseDate"),
@@ -207,18 +224,18 @@ async def process_opportunity(
         "samGovLink": f"https://sam.gov/opp/{opp_id}/view",
         "attachments": [],
         "attachmentTexts": [],
-        "scrapedAt": datetime.utcnow().isoformat(),
+        "scrapedAt": datetime.now(timezone.utc).isoformat(),
     }
 
     # Get detailed data
     details = await get_opportunity_details(client, opp_id)
     if details:
-        data2 = details.get("data2", {})
+        data2 = details.get("data2", {}) or {}
 
         # NAICS codes
-        naics_list = data2.get("naics", [])
+        naics_list = data2.get("naics", []) or []
         if naics_list:
-            primary_naics = naics_list[0].get("code", [])
+            primary_naics = naics_list[0].get("code", []) or []
             opportunity_data["naicsCode"] = primary_naics[0] if primary_naics else None
 
         # Classification/PSC code
@@ -226,40 +243,42 @@ async def process_opportunity(
 
         # Set-aside
         set_aside = data2.get("typeOfSetAside")
-        if set_aside:
+        if set_aside and isinstance(set_aside, dict):
             opportunity_data["setAsideType"] = set_aside.get("code")
             opportunity_data["setAsideDescription"] = set_aside.get("value")
 
-        # Place of performance
-        pop = data2.get("placeOfPerformance", {})
+        # Place of performance - handle None values safely
+        pop = data2.get("placeOfPerformance") or {}
         opportunity_data["placeOfPerformance"] = {
-            "city": pop.get("city", {}).get("name"),
-            "state": pop.get("state", {}).get("name"),
-            "stateCode": pop.get("state", {}).get("code"),
-            "country": pop.get("country", {}).get("name"),
-            "countryCode": pop.get("country", {}).get("code"),
+            "city": safe_get(pop, "city", "name"),
+            "state": safe_get(pop, "state", "name"),
+            "stateCode": safe_get(pop, "state", "code"),
+            "country": safe_get(pop, "country", "name"),
+            "countryCode": safe_get(pop, "country", "code"),
         }
 
         # Contacts
         contacts = []
-        for contact in data2.get("pointOfContact", []):
-            contacts.append({
-                "name": contact.get("fullName"),
-                "email": contact.get("email"),
-                "phone": contact.get("phone"),
-                "fax": contact.get("fax"),
-                "title": contact.get("title"),
-                "type": contact.get("type"),
-            })
+        for contact in (data2.get("pointOfContact") or []):
+            if contact:
+                contacts.append({
+                    "name": contact.get("fullName"),
+                    "email": contact.get("email"),
+                    "phone": contact.get("phone"),
+                    "fax": contact.get("fax"),
+                    "title": contact.get("title"),
+                    "type": contact.get("type"),
+                })
         opportunity_data["contacts"] = contacts
 
         # Award info if available
-        award = data2.get("award", {})
-        if award:
+        award = data2.get("award")
+        if award and isinstance(award, dict):
+            awardee = award.get("awardee") or {}
             opportunity_data["award"] = {
                 "amount": award.get("amount"),
-                "awardee": award.get("awardee", {}).get("name"),
-                "awardeeUei": award.get("awardee", {}).get("ueiSAM"),
+                "awardee": awardee.get("name") if isinstance(awardee, dict) else None,
+                "awardeeUei": awardee.get("ueiSAM") if isinstance(awardee, dict) else None,
             }
 
     # Download attachments if enabled
@@ -317,9 +336,11 @@ async def get_and_download_attachments(
 
         # Process all attachment lists (usually just one)
         for att_list in attachment_lists:
-            attachments = att_list.get("attachments", [])
+            attachments = att_list.get("attachments", []) or []
 
             for attachment in attachments:
+                if not attachment:
+                    continue
                 if attachment.get("deletedFlag") == "1":
                     continue
 
@@ -344,33 +365,48 @@ async def get_and_download_attachments(
                     "resourceId": resource_id,
                     "accessLevel": access_level,
                     "postedDate": attachment.get("postedDate"),
+                    "downloadUrl": f"https://sam.gov/api/prod/opps/v3/opportunities/resources/files/{resource_id}/download",
                 }
 
                 # Download the file
                 try:
                     download_url = f"{SAM_DOWNLOAD_URL}/{resource_id}/download"
-                    file_response = await client.get(download_url, headers=HEADERS)
 
-                    if file_response.status_code == 200:
-                        file_content = file_response.content
+                    # First get the redirect URL
+                    head_response = await client.head(download_url, headers=HEADERS)
 
-                        # Store file in key-value store
-                        store = await Actor.open_key_value_store()
-                        file_key = f"{opp_id}/{filename}"
-                        await store.set_value(file_key, file_content)
-                        file_info["storageKey"] = file_key
-                        file_info["downloadedSize"] = len(file_content)
+                    if head_response.status_code in (200, 303, 302):
+                        # Get the actual file - follow redirects
+                        file_response = await client.get(download_url, headers=HEADERS)
 
-                        Actor.log.info(f"Downloaded: {filename} ({len(file_content)} bytes)")
+                        if file_response.status_code == 200 and len(file_response.content) > 0:
+                            file_content = file_response.content
 
-                        # Extract text if enabled and it's a PDF
-                        if extract_text and filename.lower().endswith('.pdf'):
-                            text = extract_pdf_text(file_content)
-                            if text:
-                                result["texts"].append({
-                                    "filename": filename,
-                                    "text": text[:50000],  # Limit text length
-                                })
+                            # Store file in key-value store
+                            store = await Actor.open_key_value_store()
+                            # Sanitize filename for storage key
+                            safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+                            file_key = f"{opp_id}/{safe_filename}"
+                            await store.set_value(file_key, file_content)
+                            file_info["storageKey"] = file_key
+                            file_info["downloadedSize"] = len(file_content)
+
+                            Actor.log.info(f"Downloaded: {filename} ({len(file_content):,} bytes)")
+
+                            # Extract text if enabled and it's a PDF
+                            if extract_text and filename.lower().endswith('.pdf'):
+                                text = extract_pdf_text(file_content)
+                                if text:
+                                    result["texts"].append({
+                                        "filename": filename,
+                                        "text": text[:50000],  # Limit text length
+                                    })
+                        else:
+                            Actor.log.warning(f"Empty or failed download for {filename}: status {file_response.status_code}")
+                            file_info["downloadError"] = f"Status {file_response.status_code}"
+                    else:
+                        Actor.log.warning(f"Failed to access {filename}: status {head_response.status_code}")
+                        file_info["downloadError"] = f"Status {head_response.status_code}"
 
                 except Exception as e:
                     Actor.log.warning(f"Failed to download {filename}: {e}")
